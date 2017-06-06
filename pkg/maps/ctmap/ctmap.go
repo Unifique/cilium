@@ -17,6 +17,7 @@ package ctmap
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"unsafe"
 
 	"github.com/cilium/cilium/common"
@@ -85,6 +86,32 @@ func (c *CtEntry) GetValuePtr() unsafe.Pointer { return unsafe.Pointer(c) }
 type CtEntryDump struct {
 	Key   CtKey
 	Value CtEntry
+}
+
+const (
+	// GCFilterByTime filters ct entries by time
+	GCFilterByTime = 1 << iota
+	// GCFilterByID filters ct entries by IP and IDsTOKeep
+	GCFilterByID
+)
+
+// GCFilterFlags is the type for the different filter flags
+type GCFilterFlags uint
+
+// GCFilter contains the necessary fields to filter the CT maps.
+type GCFilter struct {
+	Time      uint32
+	IP        net.IP
+	IDsToKeep map[uint32]bool
+	fType     GCFilterFlags
+}
+
+// NewGCFilterBy creates a new GCFilter with the given flags.
+func NewGCFilterBy(f GCFilterFlags) *GCFilter {
+	return &GCFilter{
+		fType:     f,
+		IDsToKeep: map[uint32]bool{},
+	}
 }
 
 // ToString iterates through Map m and writes the values of the ct entries in m
@@ -170,16 +197,20 @@ func dumpToSlice(m *bpf.Map, mapType string) ([]CtEntryDump, error) {
 	return entries, nil
 }
 
-// doGC6 iterates through a CTv6 map and drops entries when they timeout.
-func doGC6(m *bpf.Map, deleted *int, time uint32) {
-	var nextKey, tmpKey CtKey6Global
-
+// doGC6 iterates through a CTv6 map and drops entries based on the given
+// filter.
+func doGC6(m *bpf.Map, deleted *int, filter *GCFilter) {
+	var (
+		nextKey, tmpKey CtKey6Global
+		del             bool
+	)
 	err := m.GetNextKey(&tmpKey, &nextKey)
 	if err != nil {
 		return
 	}
 
 	for true {
+		del = false
 		nextKeyValid := m.GetNextKey(&nextKey, &tmpKey)
 		entryMap, err := m.Lookup(&nextKey)
 		if err != nil {
@@ -188,7 +219,20 @@ func doGC6(m *bpf.Map, deleted *int, time uint32) {
 		}
 
 		entry := entryMap.(*CtEntry)
-		if entry.lifetime < time {
+		if filter.fType&GCFilterByTime != 0 {
+			if entry.lifetime < filter.Time {
+				del = true
+			}
+		}
+		if filter.fType&GCFilterByID != 0 {
+			if nextKey.saddr.IP().Equal(filter.IP) {
+				if _, ok := filter.IDsToKeep[entry.alien_id]; !ok {
+					del = true
+				}
+			}
+		}
+
+		if del {
 			err := m.Delete(&nextKey)
 			if err != nil {
 				log.Debugf("error during Delete: %s", err)
@@ -204,9 +248,13 @@ func doGC6(m *bpf.Map, deleted *int, time uint32) {
 	}
 }
 
-// doGC4 iterates through a CTv4 map and drops entries when they timeout.
-func doGC4(m *bpf.Map, deleted *int, time uint32) {
-	var nextKey, tmpKey CtKey4Global
+// doGC4 iterates through a CTv4 map and drops entries based on the given
+// filter.
+func doGC4(m *bpf.Map, deleted *int, filter *GCFilter) {
+	var (
+		nextKey, tmpKey CtKey4Global
+		del             bool
+	)
 
 	err := m.GetNextKey(&tmpKey, &nextKey)
 	if err != nil {
@@ -214,6 +262,7 @@ func doGC4(m *bpf.Map, deleted *int, time uint32) {
 	}
 
 	for true {
+		del = false
 		nextKeyValid := m.GetNextKey(&nextKey, &tmpKey)
 		entryMap, err := m.Lookup(&nextKey)
 		if err != nil {
@@ -222,7 +271,21 @@ func doGC4(m *bpf.Map, deleted *int, time uint32) {
 		}
 
 		entry := entryMap.(*CtEntry)
-		if entry.lifetime < time {
+
+		if filter.fType&GCFilterByTime != 0 {
+			if entry.lifetime < filter.Time {
+				del = true
+			}
+		}
+		if filter.fType&GCFilterByID != 0 {
+			if nextKey.saddr.IP().Equal(filter.IP) {
+				if _, ok := filter.IDsToKeep[entry.alien_id]; !ok {
+					del = true
+				}
+			}
+		}
+
+		if del {
 			err := m.Delete(&nextKey)
 			if err != nil {
 				log.Debugf("error during Delete: %s", err)
@@ -238,18 +301,21 @@ func doGC4(m *bpf.Map, deleted *int, time uint32) {
 	}
 }
 
-// GC runs garbage collection for map m with name mapName with interval interval.
+// GC runs garbage collection for map m with name mapName with the given filter.
 // It returns how many items were deleted from m.
-func GC(m *bpf.Map, mapName string) int {
-	t, _ := bpf.GetMtime()
-	tsec := t / 1000000000
+func GC(m *bpf.Map, mapName string, filter *GCFilter) int {
+	if filter.fType&GCFilterByTime != 0 {
+		t, _ := bpf.GetMtime()
+		tsec := t / 1000000000
+		filter.Time = uint32(tsec)
+	}
 	deleted := 0
 
 	switch mapName {
 	case MapName6, MapName6Global:
-		doGC6(m, &deleted, uint32(tsec))
+		doGC6(m, &deleted, filter)
 	case MapName4, MapName4Global:
-		doGC4(m, &deleted, uint32(tsec))
+		doGC4(m, &deleted, filter)
 	}
 
 	return deleted

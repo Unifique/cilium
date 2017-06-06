@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
+	"sync"
 
 	"github.com/cilium/cilium/api/v1/models"
 	. "github.com/cilium/cilium/api/v1/server/restapi/policy"
@@ -26,6 +28,7 @@ import (
 	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/endpointmanager"
 	"github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/maps/policymap"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
@@ -65,7 +68,8 @@ func (d *Daemon) invalidateCache() {
 }
 
 // TriggerPolicyUpdates triggers policy updates for every daemon's endpoint.
-func (d *Daemon) TriggerPolicyUpdates(added []policy.NumericIdentity) {
+// returns a waiting group which signalizes if all endpoints are regenerated.
+func (d *Daemon) TriggerPolicyUpdates(added []policy.NumericIdentity) *sync.WaitGroup {
 
 	if len(added) == 0 {
 		log.Debugf("Full policy recalculation triggered")
@@ -79,8 +83,7 @@ func (d *Daemon) TriggerPolicyUpdates(added []policy.NumericIdentity) {
 	d.GetPolicyRepository().Mutex.RLock()
 	d.EnablePolicyEnforcement()
 	d.GetPolicyRepository().Mutex.RUnlock()
-
-	endpointmanager.TriggerPolicyUpdates(d)
+	return endpointmanager.TriggerPolicyUpdates(d)
 }
 
 // UpdateEndpointPolicyEnforcement returns whether policy enforcement needs to be
@@ -276,7 +279,34 @@ func (d *Daemon) PolicyDelete(labels labels.LabelArray) *apierror.APIError {
 		return apierror.New(DeletePolicyNotFoundCode, "policy not found")
 	}
 
-	d.TriggerPolicyUpdates([]policy.NumericIdentity{})
+	go func() {
+		wg := d.TriggerPolicyUpdates([]policy.NumericIdentity{})
+		// waiting on PR 870
+		//if d.PolicyEnabled() {
+		wg.Wait()
+		consumables := d.consumableCache.GetConsumables()
+		endpointmanager.Mutex.RLock()
+		for _, ep := range endpointmanager.Endpoints {
+			ep.Mutex.RLock()
+			if ep.SecLabel == nil {
+				ep.Mutex.RUnlock()
+				continue
+			}
+			epSecID := ep.SecLabel.ID
+			ep.Mutex.RUnlock()
+
+			idsToKeep := map[uint32]bool{}
+			if v, ok := consumables[epSecID]; ok {
+				for _, consumer := range v {
+					idsToKeep[consumer.Uint32()] = true
+				}
+			}
+			log.Debugf("Keeping entries for %d: %+v", ep.ID, idsToKeep)
+			d.KeepCTEntryOf(ep, idsToKeep)
+		}
+		endpointmanager.Mutex.RUnlock()
+		//}
+	}()
 	return nil
 }
 
@@ -375,4 +405,30 @@ func (d *Daemon) PolicyInit() error {
 	}
 
 	return nil
+}
+
+// KeepCTEntryOf cleans the connection tracking table keeping the endpoint's IPs
+// entries that have the alien_id equal to any of the given ids.
+func (d *Daemon) KeepCTEntryOf(e *endpoint.Endpoint, ids map[uint32]bool) {
+	var ip6, ip4 net.IP
+
+	e.Mutex.RLock()
+	isLocal := e.Opts.IsEnabled(endpoint.OptionConntrackLocal)
+	copy(ip6, e.IPv6.IP())
+	if !d.conf.IPv4Disabled {
+		copy(ip4, e.IPv4.IP())
+	}
+	// We can unlock the endpoint mutex since
+	// in runGC it will be locked as needed.
+	e.Mutex.RUnlock()
+
+	gcFilter := ctmap.NewGCFilterBy(ctmap.GCFilterByID)
+	gcFilter.IDsToKeep = ids
+	gcFilter.IP = ip6
+
+	endpointmanager.RunGC(e, isLocal, true, gcFilter)
+	if !d.conf.IPv4Disabled {
+		gcFilter.IP = ip4
+		endpointmanager.RunGC(e, isLocal, false, gcFilter)
+	}
 }

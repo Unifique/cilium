@@ -51,7 +51,8 @@ cat <<EOF | cilium -D policy import -
 	    "toPorts": [{
 		    "ports": [{"port": "80", "protocol": "tcp"}]
 	    }]
-    }]
+    }],
+    "labels": ["id=server"]
 },{
     "endpointSelector": {"matchLabels":{"id.server":""}},
     "ingress": [{
@@ -59,7 +60,8 @@ cat <<EOF | cilium -D policy import -
 	    {"matchLabels":{"reserved:host":""}},
 	    {"matchLabels":{"id.client":""}}
 	]
-    }]
+    }],
+    "labels": ["id=curl"]
 },{
     "endpointSelector": {"matchLabels":{"id.httpd":""}},
     "ingress": [{
@@ -69,7 +71,8 @@ cat <<EOF | cilium -D policy import -
 	"toPorts": [
 	    {"ports": [{"port": "80", "protocol": "tcp"}]}
 	]
-    }]
+    }],
+    "labels": ["id=httpd"]
 },{
     "endpointSelector": {"matchLabels":{"id.httpd_deny":""}},
     "ingress": [{
@@ -79,7 +82,8 @@ cat <<EOF | cilium -D policy import -
 	"toPorts": [
 	    {"ports": [{"port": "9090", "protocol": "tcp"}]}
 	]
-    }]
+    }],
+    "labels": ["id=httpd_deny"]
 }]
 EOF
 
@@ -233,4 +237,19 @@ wait_for_endpoints 5
 BIDIRECTIONAL=0
 connectivity_test
 
-cilium policy delete --all
+entriesBefore=$(sudo cilium bpf ct list global | wc -l)
+
+cilium policy delete id=httpd
+
+wait_for_endpoints 5
+
+# Let's give some time for CT entries to be removed
+sleep 10s
+
+entriesAfter=$(sudo cilium bpf ct list global | wc -l)
+
+if [ "${entriesAfter}" -eq 0 ]; then
+    abort "CT map should not be empty"
+elif [ "${entriesBefore}" -le "${entriesAfter}" ]; then
+    abort "some of the CT entries should have been removed after policy change"
+fi

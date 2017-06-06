@@ -31,7 +31,7 @@ const (
 	GcInterval int = 10
 )
 
-func runGC(e *endpoint.Endpoint, isLocal, isIPv6 bool) {
+func RunGC(e *endpoint.Endpoint, isLocal, isIPv6 bool, filter *ctmap.GCFilter) {
 	var file string
 	var mapType string
 	// TODO: We need to optimize this a bit in future, so we traverse
@@ -67,7 +67,7 @@ func runGC(e *endpoint.Endpoint, isLocal, isIPv6 bool) {
 		return
 	}
 
-	deleted := ctmap.GC(m, mapType)
+	deleted := ctmap.GC(m, mapType, filter)
 
 	if deleted > 0 {
 		log.Debugf("Deleted %d entries from map %s", deleted, file)
@@ -78,9 +78,8 @@ func runGC(e *endpoint.Endpoint, isLocal, isIPv6 bool) {
 func EnableConntrackGC(ipv4, ipv6 bool) {
 	go func() {
 		seenGlobal := false
+		sleepTime := time.Duration(GcInterval) * time.Second
 		for {
-			sleepTime := time.Duration(GcInterval) * time.Second
-
 			Mutex.RLock()
 
 			for k := range Endpoints {
@@ -109,15 +108,13 @@ func EnableConntrackGC(ipv4, ipv6 bool) {
 					}
 					seenGlobal = true
 				}
-
-				e.Mutex.RUnlock()
 				// We can unlock the endpoint mutex sense
 				// in runGC it will be locked as needed.
 				if ipv6 {
-					runGC(e, isLocal, true)
+					RunGC(e, isLocal, true, ctmap.NewGCFilterBy(ctmap.GCFilterByTime))
 				}
 				if ipv4 {
-					runGC(e, isLocal, false)
+					RunGC(e, isLocal, false, ctmap.NewGCFilterBy(ctmap.GCFilterByTime))
 				}
 			}
 

@@ -76,6 +76,21 @@ func (c *ConsumableCache) GetReservedIDs() []NumericIdentity {
 	return identities
 }
 
+// GetConsumables returns a map of consumables:consumers.
+func (c *ConsumableCache) GetConsumables() map[NumericIdentity][]NumericIdentity {
+	consumables := map[NumericIdentity][]NumericIdentity{}
+	c.cacheMU.RLock()
+	for _, consumable := range c.cache {
+		consumers := []NumericIdentity{}
+		for _, consumer := range consumable.Consumers {
+			consumers = append(consumers, consumer.ID)
+		}
+		consumables[consumable.ID] = consumers
+	}
+	c.cacheMU.RUnlock()
+	return consumables
+}
+
 // GetIteration returns the current iteration of the ConsumableCache.
 func (c *ConsumableCache) GetIteration() int {
 	c.cacheMU.RLock()
