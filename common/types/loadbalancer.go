@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"net"
 	"strings"
-	"sync"
 
 	"github.com/cilium/cilium/api/v1/models"
 )
@@ -83,37 +82,6 @@ type SVCMapID map[ServiceID]*LBSVC
 // RevNATMap is a map of the daemon's RevNATs.
 type RevNATMap map[ServiceID]L3n4Addr
 
-// LoadBalancer is the internal representation of the loadbalancer in the local cilium
-// daemon.
-type LoadBalancer struct {
-	BPFMapMU  sync.RWMutex
-	SVCMap    SVCMap
-	SVCMapID  SVCMapID
-	RevNATMap RevNATMap
-
-	K8sMU        sync.Mutex
-	K8sServices  map[K8sServiceNamespace]*K8sServiceInfo
-	K8sEndpoints map[K8sServiceNamespace]*K8sServiceEndpoint
-	K8sIngress   map[K8sServiceNamespace]*K8sServiceInfo
-}
-
-// AddService adds a service to list of loadbalancers and returns true if created.
-func (lb *LoadBalancer) AddService(svc LBSVC) bool {
-	oldSvc, ok := lb.SVCMapID[svc.FE.ID]
-	if ok {
-		// If service already existed, remove old entry from map
-		delete(lb.SVCMap, oldSvc.Sha256)
-	}
-	lb.SVCMap[svc.Sha256] = svc
-	lb.SVCMapID[svc.FE.ID] = &svc
-	return !ok
-}
-
-func (lb *LoadBalancer) DeleteService(svc *LBSVC) {
-	delete(lb.SVCMap, svc.Sha256)
-	delete(lb.SVCMapID, svc.FE.ID)
-}
-
 func NewL4Type(name string) (L4Type, error) {
 	switch strings.ToLower(name) {
 	case "tcp":
@@ -122,18 +90,6 @@ func NewL4Type(name string) (L4Type, error) {
 		return UDP, nil
 	default:
 		return "", fmt.Errorf("Unknown L4 protocol")
-	}
-}
-
-// NewLoadBalancer returns a LoadBalancer with all maps initialized.
-func NewLoadBalancer() *LoadBalancer {
-	return &LoadBalancer{
-		SVCMap:       SVCMap{},
-		SVCMapID:     SVCMapID{},
-		RevNATMap:    RevNATMap{},
-		K8sServices:  map[K8sServiceNamespace]*K8sServiceInfo{},
-		K8sEndpoints: map[K8sServiceNamespace]*K8sServiceEndpoint{},
-		K8sIngress:   map[K8sServiceNamespace]*K8sServiceInfo{},
 	}
 }
 

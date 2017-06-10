@@ -34,7 +34,6 @@ import (
 	"github.com/cilium/cilium/common"
 	"github.com/cilium/cilium/common/addressing"
 	"github.com/cilium/cilium/common/ipam"
-	"github.com/cilium/cilium/common/types"
 	"github.com/cilium/cilium/daemon/defaults"
 	"github.com/cilium/cilium/daemon/options"
 	"github.com/cilium/cilium/pkg/apierror"
@@ -80,7 +79,7 @@ type Daemon struct {
 	k8sClient         *kubernetes.Clientset
 	kvClient          kvstore.KVClient
 	l7Proxy           *proxy.Proxy
-	loadBalancer      *types.LoadBalancer
+	loadBalancer      *LoadBalancer
 	loopbackIPv4      net.IP
 	policy            *policy.Repository
 
@@ -573,8 +572,6 @@ func NewDaemon(c *Config) (*Daemon, error) {
 		return nil, err
 	}
 
-	lb := types.NewLoadBalancer()
-
 	d := Daemon{
 		conf:              c,
 		kvClient:          kvClient,
@@ -583,7 +580,7 @@ func NewDaemon(c *Config) (*Daemon, error) {
 		endpoints:         make(map[uint16]*endpoint.Endpoint),
 		endpointsAux:      make(map[string]*endpoint.Endpoint),
 		events:            make(chan events.Event, 512),
-		loadBalancer:      lb,
+		loadBalancer:      NewLoadBalancer(),
 		consumableCache:   policy.NewConsumableCache(),
 		policy:            policy.NewPolicyRepository(),
 		ignoredContainers: make(map[string]int),
