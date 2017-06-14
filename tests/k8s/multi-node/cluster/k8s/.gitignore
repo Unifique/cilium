@@ -1,0 +1,3 @@
+kube-api-server.json
+kube-controller-manager.json
+kube-scheduler.json
